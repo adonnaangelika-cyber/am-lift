@@ -3382,6 +3382,16 @@ function savePlan(){
   plans[selectedDateStr]=flatItems;
   appData.plans=plans;
   fbSavePlan(selectedDateStr,flatItems);
+  // Editing the plan can shift which exercise sits at which position, and the
+  // Today tab's quick-log drafts are keyed by position — so any not-yet-completed
+  // draft for this date is no longer guaranteed to match the right exercise.
+  // Clear it rather than risk resurrecting stale numbers under the wrong exercise.
+  // (Anything already marked done is safely stored in Firestore, not here.)
+  const stalePrefix=`inlog_${profile}_${selectedDateStr}_`;
+  Object.keys(appData.inlineLog).filter(k=>k.startsWith(stalePrefix)).forEach(k=>{
+    delete appData.inlineLog[k];
+    clearInlineLogDraft(k);
+  });
   // Go back to app and close plan builder screen
   document.getElementById('s-plan-builder').classList.remove('active');
   closeModal('m-planbuild'); // safety in case modal was open
