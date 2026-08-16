@@ -222,6 +222,20 @@ input{font-family:inherit}
 .pb-strip-row{display:flex;flex-wrap:wrap;gap:5px}
 .pb-strip-chip{display:inline-flex;align-items:center;gap:4px;border-radius:10px;padding:3px 8px;font-size:11px;font-weight:700;border:1.5px solid transparent;transition:background .15s,color .15s,border-color .15s}
 .pb-strip-chip.zero{background:var(--surface2);color:var(--text3);border-color:var(--border)}
+.pb-section{border-bottom:1px solid var(--border)}
+.pb-section:last-child{border-bottom:none}
+.pb-section-hdr{display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:2px 0;-webkit-tap-highlight-color:transparent}
+.pb-section-hdr .pb-strip-title{margin-bottom:0}
+.pb-chev{font-size:10px;color:var(--text3);transition:transform .15s;flex-shrink:0}
+.pb-chev.open{transform:rotate(90deg)}
+.pb-section-body{overflow:hidden;max-height:0;transition:max-height .18s ease}
+.pb-section-body.open{max-height:600px;overflow-y:auto}
+.pb-section-body-inner{padding-top:8px}
+.plan-summary-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)}
+.plan-summary-row:last-child{border-bottom:none}
+.plan-summary-name{font-size:12.5px;font-weight:600;color:var(--text)}
+.plan-summary-sub{font-size:10.5px;color:var(--text3);font-weight:600}
+.plan-summary-del{background:none;border:none;cursor:pointer;font-size:14px;color:var(--danger);padding:2px 6px}
 .sess-hdr{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
 .back-btn{width:30px;height:30px;border-radius:50%;background:var(--surface2);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
 .sess-title{font-weight:700;font-size:15px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -739,10 +753,33 @@ input{font-family:inherit}
   </div>
   <!-- Persistent muscle name + color strip — stays fixed while list scrolls -->
   <div class="pb-muscle-strip">
-    <div class="pb-strip-title">Muscles in this plan</div>
-    <div class="pb-strip-row" id="pb-muscle-strip-row"></div>
-    <div class="pb-strip-title" style="margin-top:10px">Sets per muscle</div>
-    <div id="pb-sets-heatmap"></div>
+    <div class="pb-section">
+      <div class="pb-section-hdr" onclick="togglePbSection('plan')">
+        <div class="pb-strip-title">Current plan (<span id="pb-plan-count">0</span>)</div>
+        <div class="pb-chev" id="pb-chev-plan">▸</div>
+      </div>
+      <div class="pb-section-body" id="pb-plan-body">
+        <div class="pb-section-body-inner" id="pb-plan-list"></div>
+      </div>
+    </div>
+    <div class="pb-section">
+      <div class="pb-section-hdr" onclick="togglePbSection('muscles')">
+        <div class="pb-strip-title">Muscles in this plan</div>
+        <div class="pb-chev" id="pb-chev-muscles">▸</div>
+      </div>
+      <div class="pb-section-body" id="pb-muscles-body">
+        <div class="pb-section-body-inner"><div class="pb-strip-row" id="pb-muscle-strip-row"></div></div>
+      </div>
+    </div>
+    <div class="pb-section">
+      <div class="pb-section-hdr" onclick="togglePbSection('setsmap')">
+        <div class="pb-strip-title">Sets per muscle</div>
+        <div class="pb-chev" id="pb-chev-setsmap">▸</div>
+      </div>
+      <div class="pb-section-body" id="pb-setsmap-body">
+        <div class="pb-section-body-inner" id="pb-sets-heatmap"></div>
+      </div>
+    </div>
   </div>
   <!-- Scrollable exercise list -->
   <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px">
@@ -966,7 +1003,7 @@ async function loadFromFirebase(){
   fbLoading=true;
   setSyncStatus('syncing');
   // Reset in-memory data for this profile
-  appData.sessions=null; appData.plans=null; appData.done={}; appData.inlineLog={};
+  appData.sessions=null; appData.plans=null; appData.done={}; appData.inlineLog=loadInlineLogDrafts();
   try {
     const needsShared = appData.exercises===null || appData.groups===null;
     const promises = [sessRef().get(), planRef().get()];
@@ -1304,6 +1341,56 @@ let muscleChart = null;
 let selectedProgressEx = null;
 let editingSessionId = null;
 
+/* ── Session-in-progress draft persistence ──────────────────────────────
+   Mirrors sessionData to localStorage on every change so an accidental
+   close/refresh of the app doesn't lose typed-but-not-yet-finished values.
+   Nothing here touches Firestore — that only happens when the exercise is
+   actually marked done / the session is finished, same as before. ── */
+function sessionDraftKey(dateStr){ return `liftSessDraft_${profile}_${dateStr}`; }
+
+function saveSessionDraft(){
+  if(!selectedDateStr || !sessionExercises.length) return;
+  try {
+    const draft = {};
+    sessionExercises.forEach((ex,i)=>{
+      if(!sessionData[i]) return;
+      draft[ex.id||ex.name] = {
+        sets: sessionData[i].sets,
+        uniform: sessionData[i].uniform,
+        differ: !!sessionData[i].differ,
+        exDone: !!sessionData[i].exDone
+      };
+    });
+    localStorage.setItem(sessionDraftKey(selectedDateStr), JSON.stringify(draft));
+  } catch(e) {}
+}
+
+function loadSessionDraft(dateStr){
+  try { return JSON.parse(localStorage.getItem(sessionDraftKey(dateStr))||'null') || {}; }
+  catch(e) { return {}; }
+}
+
+function clearSessionDraft(dateStr){
+  try { localStorage.removeItem(sessionDraftKey(dateStr)); } catch(e) {}
+}
+
+// Overlays any saved draft onto freshly-built sessionData for exercises that
+// aren't already committed to Firestore, so reopening the session for this
+// date picks back up exactly where typing left off.
+function applySessionDraft(dateStr){
+  const draft = loadSessionDraft(dateStr);
+  if(!Object.keys(draft).length) return;
+  sessionExercises.forEach((ex,i)=>{
+    if(!sessionData[i] || sessionData[i].exDone) return; // already committed — don't override with a stale draft
+    const d = draft[ex.id||ex.name];
+    if(!d) return;
+    if(d.sets) sessionData[i].sets = d.sets;
+    if(d.uniform) sessionData[i].uniform = d.uniform;
+    sessionData[i].differ = !!d.differ;
+    sessionData[i].exDone = !!d.exDone;
+  });
+}
+
 /* ── Pure in-memory accessors — no localStorage for app data ── */
 function getExercises(){ return appData.exercises || DEFAULT_EXERCISES.map(e=>({...e})); }
 function getGroups(){ return appData.groups || DEFAULT_GROUPS.map(g=>({...g})); }
@@ -1596,7 +1683,7 @@ function selectProfile(p){
   document.getElementById('hdr-name').textContent = p==='adonna'?'Adonna':'Brittney';
   selectedProgressEx = null;
   // Reset profile-scoped data; shared data (exercises/groups) kept across profile switches
-  appData.sessions=null; appData.plans=null; appData.done={}; appData.inlineLog={};
+  appData.sessions=null; appData.plans=null; appData.done={}; appData.inlineLog=loadInlineLogDrafts();
   // Show loading state immediately, then render after Firebase returns
   goTab('today');
   loadFromFirebase().then(()=>{
@@ -2129,13 +2216,13 @@ function renderToday(){
       if(g) g.exerciseIds.forEach(id=>{ const e=exercises.find(x=>x.id===id); if(e) planFlatForProjection.push(e); });
     } else {
       const e=exercises.find(x=>x.id===item.id);
-      if(e) planFlatForProjection.push(e);
+      if(e) planFlatForProjection.push({...e, defaultSets:item.sets||e.defaultSets});
     }
   });
   const weekSetsWithPlan = {...weekSetsCurrent};
   planFlatForProjection.forEach(e=>{
     if(loggedExNamesToday.has(e.name)) return; // already logged today, already counted in "current"
-    (e.muscles||[]).forEach(m=>{ if(weekSetsWithPlan[m]!==undefined) weekSetsWithPlan[m]+=3; });
+    (e.muscles||[]).forEach(m=>{ if(weekSetsWithPlan[m]!==undefined) weekSetsWithPlan[m]+=(e.defaultSets||3); });
   });
   const hasSetsPreviewData = MUSCLE_GROUPS.some(m=>weekSetsWithPlan[m]>0);
 
@@ -2222,7 +2309,7 @@ function renderToday(){
           }
         } else {
           const e=exercises.find(x=>x.id===item.id);
-          if(e){ flatExercises.push({...e,groupName:''}); groupNames.push(e.name); }
+          if(e){ flatExercises.push({...e,groupName:'',defaultSets:item.sets||e.defaultSets}); groupNames.push(e.name); }
         }
       });
 
@@ -2355,9 +2442,43 @@ function getInlineLog(dateStr, itemIdx, exIdx, ex){
   return state;
 }
 
+// ── Draft persistence — silently mirrors in-progress typing to localStorage
+// so an accidental close/refresh doesn't lose what was typed. Nothing is
+// pushed to Firestore until the exercise (or session) is actually completed.
 function saveInlineLog(dateStr, itemIdx, exIdx){
-  // inline log lives in appData.inlineLog — already updated in place, nothing extra needed
-  // (kept as no-op stub so call sites don't break)
+  const k = inlineKey(dateStr, itemIdx, exIdx);
+  const state = appData.inlineLog[k];
+  try {
+    if(state){
+      const {timerInterval, ...persistable} = state; // never serialize a live interval id
+      localStorage.setItem('liftDraft_'+k, JSON.stringify(persistable));
+    } else {
+      localStorage.removeItem('liftDraft_'+k);
+    }
+  } catch(e) {}
+}
+
+function clearInlineLogDraft(k){
+  try { localStorage.removeItem('liftDraft_'+k); } catch(e) {}
+}
+
+// Reads every saved inline-log draft for the current profile back into memory.
+// Called on load so typing survives a refresh/close.
+function loadInlineLogDrafts(){
+  const map = {};
+  try {
+    const prefix = `liftDraft_inlog_${profile}_`;
+    for(let i=0;i<localStorage.length;i++){
+      const key = localStorage.key(i);
+      if(key && key.startsWith(prefix)){
+        try {
+          const val = JSON.parse(localStorage.getItem(key));
+          if(val) map[key.slice('liftDraft_'.length)] = val;
+        } catch(e) {}
+      }
+    }
+  } catch(e) {}
+  return map;
 }
 
 function buildInlineExPanel(ex, itemIdx, exIdx, isDone, isB, bClass, dateStr){
@@ -2882,11 +3003,13 @@ async function completePlanItem(itemIdx, dateStr){
     const suffix=rest.slice(uscore);
     if(idx===itemIdx){
       delete appData.inlineLog[k];
+      clearInlineLogDraft(k);
     } else if(idx>itemIdx){
       const val=appData.inlineLog[k];
       delete appData.inlineLog[k];
+      clearInlineLogDraft(k);
       const newKey=`${logPrefix}${idx-1}${suffix}`;
-      if(val) appData.inlineLog[newKey]=val;
+      if(val){ appData.inlineLog[newKey]=val; saveInlineLog(dateStr, idx-1, parseInt(suffix.slice(1))); }
     }
   });
 
@@ -2934,9 +3057,17 @@ function openPlanBuilder(){
   if(searchEl) searchEl.value='';
   document.getElementById('s-app').classList.remove('active');
   document.getElementById('s-plan-builder').classList.add('active');
+  // All three summary sections start minimized while editing — tap to expand
+  ['plan','muscles','setsmap'].forEach(key=>{
+    const body=document.getElementById(`pb-${key}-body`);
+    const chev=document.getElementById(`pb-chev-${key}`);
+    if(body) body.classList.remove('open');
+    if(chev) chev.classList.remove('open');
+  });
   renderPlanBuilderCatFilter();
   renderPlanBuilderContent();
   updatePlanBuilderMusclePreview();
+  renderPlanSummary();
   setTimeout(()=>{ const s=document.getElementById('pb-search'); if(s) s.focus(); },200);
 }
 
@@ -2944,6 +3075,66 @@ function closePlanBuilder(){
   document.getElementById('s-plan-builder').classList.remove('active');
   document.getElementById('s-app').classList.add('active');
   renderToday();
+}
+
+function togglePbSection(key){
+  const body=document.getElementById(`pb-${key}-body`);
+  const chev=document.getElementById(`pb-chev-${key}`);
+  if(!body) return;
+  const open=body.classList.toggle('open');
+  if(chev) chev.classList.toggle('open',open);
+}
+
+function renderPlanSummary(){
+  const listEl=document.getElementById('pb-plan-list');
+  const countEl=document.getElementById('pb-plan-count');
+  if(!listEl) return;
+  const exercises=getExercises();
+  const groups=getGroups();
+  if(countEl) countEl.textContent=tempPlanSelections.length;
+  if(!tempPlanSelections.length){
+    listEl.innerHTML='<div style="font-size:12px;color:var(--text3);padding:4px 0">Nothing added yet — pick exercises or groups below</div>';
+    return;
+  }
+  listEl.innerHTML = tempPlanSelections.map(item=>{
+    if(item.type==='group'){
+      const g=groups.find(x=>x.id===item.id);
+      if(!g) return '';
+      const n=g.exerciseIds.filter(id=>exercises.find(e=>e.id===id)).length;
+      return `<div class="plan-summary-row">
+        <div><div class="plan-summary-name">${g.name}</div><div class="plan-summary-sub">Group · ${n} exercise${n===1?'':'s'}</div></div>
+        <button class="plan-summary-del" onclick="removePlanItem('group','${g.id}')" title="Remove from plan">🗑</button>
+      </div>`;
+    } else {
+      const e=exercises.find(x=>x.id===item.id);
+      if(!e) return '';
+      const sets=item.sets||e.defaultSets||3;
+      return `<div class="plan-summary-row">
+        <div><div class="plan-summary-name">${e.name}</div><div class="plan-summary-sub">${sets} set${sets===1?'':'s'}</div></div>
+        <button class="plan-summary-del" onclick="removePlanItem('exercise','${e.id}')" title="Remove from plan">🗑</button>
+      </div>`;
+    }
+  }).join('');
+}
+
+function removePlanItem(type,id){
+  const idx=tempPlanSelections.findIndex(s=>s.type===type&&s.id===id);
+  if(idx>-1) tempPlanSelections.splice(idx,1);
+  renderPlanBuilderContent();
+  updatePlanBuilderMusclePreview();
+  renderPlanSummary();
+}
+
+function adjPlanItemSets(id,delta){
+  const item=tempPlanSelections.find(s=>s.type==='exercise'&&s.id===id);
+  if(!item) return;
+  const exercises=getExercises();
+  const ex=exercises.find(e=>e.id===id);
+  const base=item.sets||ex?.defaultSets||3;
+  item.sets=Math.max(1,Math.min(10,base+delta));
+  renderPlanBuilderContent();
+  updatePlanBuilderMusclePreview();
+  renderPlanSummary();
 }
 
 let planBuilderQuery='';
@@ -3127,7 +3318,9 @@ function renderPlanBuilderContent(){
   }).join('');
 
   let eHTML=filteredExercises.map(e=>{
-    const sel=tempPlanSelections.some(s=>s.type==='exercise'&&s.id===e.id);
+    const selItem=tempPlanSelections.find(s=>s.type==='exercise'&&s.id===e.id);
+    const sel=!!selItem;
+    const curSets=selItem?(selItem.sets||e.defaultSets||3):(e.defaultSets||3);
     return `<div class="picker-item ${sel?'sel':''}${sel&&isB?' b':''}" id="pb-pick-${e.id}">
       <div onclick="togglePlanItem('exercise','${e.id}')">
         <div class="picker-item-hdr">
@@ -3138,6 +3331,12 @@ function renderPlanBuilderContent(){
           <div class="picker-check">${sel?'✓':''}</div>
         </div>
       </div>
+      ${sel?`<div class="sets-count-row" style="padding:6px 0 0;border-bottom:none">
+        <div class="sets-count-lbl">Sets</div>
+        <button class="sets-count-btn" onclick="event.stopPropagation();adjPlanItemSets('${e.id}',-1)">−</button>
+        <div class="sets-count-num">${curSets}</div>
+        <button class="sets-count-btn" onclick="event.stopPropagation();adjPlanItemSets('${e.id}',1)">+</button>
+      </div>`:''}
       ${e.desc?`<button class="ex-desc-btn ${bClass}" style="margin-top:6px" onclick="event.stopPropagation();togDesc('pb-howto-${e.id}',this)">How to</button><div class="ex-desc-panel" id="pb-howto-${e.id}">${e.desc}</div>`:''}
     </div>`;
   }).join('');
@@ -3164,6 +3363,7 @@ function togglePlanItem(type,id){
   else tempPlanSelections.push({type,id});
   renderPlanBuilderContent();
   updatePlanBuilderMusclePreview();
+  renderPlanSummary();
 }
 
 function savePlan(){
@@ -3223,6 +3423,7 @@ function stopTimer(i){
     sessionData[i].sets.forEach(s=>s.time=String(elapsed));
     const uInp=document.getElementById(`ut-${i}`);
     if(uInp) uInp.value=elapsed;
+    saveSessionDraft();
   }
   sessionTimers[i].savedTime=elapsed;
   const disp=document.getElementById(`timer-disp-${i}`);
@@ -3461,6 +3662,7 @@ function markExDone(i){
     });
   }
   sessionData[i].exDone = true;
+  saveSessionDraft();
   renderSessionBody();
   // Scroll to top of sess-body smoothly so user sees the done section grow
   const body = document.getElementById('sess-body');
@@ -3470,6 +3672,7 @@ function markExDone(i){
 function unmarkExDone(i){
   if(!sessionData[i]) return;
   sessionData[i].exDone = false;
+  saveSessionDraft();
   renderSessionBody();
 }
 
@@ -3480,12 +3683,13 @@ function togDesc(id,btn){
   btn.textContent=el.classList.contains('open')?'Hide':'How to';
 }
 
-function updSet(i,si,f,v){ if(sessionData[i]) sessionData[i].sets[si][f]=v; }
+function updSet(i,si,f,v){ if(sessionData[i]){ sessionData[i].sets[si][f]=v; saveSessionDraft(); } }
 
 function updUniform(i,f,v){
   if(!sessionData[i]) return;
   sessionData[i].uniform[f]=v;
   sessionData[i].sets.forEach(s=>s[f]=v);
+  saveSessionDraft();
 }
 
 function adjSets(i,delta){
@@ -3505,6 +3709,7 @@ function adjSets(i,delta){
   } else {
     sessionData[i].sets=sessionData[i].sets.slice(0,next);
   }
+  saveSessionDraft();
   const el=document.getElementById('sc-'+i);
   if(el) el.textContent=next;
 }
@@ -3520,12 +3725,14 @@ function togDiffer(i,checked){
       if(u.time!==undefined&&!s.time) s.time=u.time;
     });
   }
+  saveSessionDraft();
   renderSessionBody();
 }
 
 function togSetDone(i,si){
   if(!sessionData[i]) return;
   sessionData[i].sets[si].done=!sessionData[i].sets[si].done;
+  saveSessionDraft();
   const isB=profile==='brittney';
   const btn=document.getElementById(`sd-${i}-${si}`);
   if(btn){ btn.className=`set-done${sessionData[i].sets[si].done?' done':''}${sessionData[i].sets[si].done&&isB?' b':''}`; }
@@ -3534,6 +3741,7 @@ function togSetDone(i,si){
 function addSet(i){
   const tt=getTrackType(sessionExercises[i]);
   sessionData[i].sets.push(emptySet(tt));
+  saveSessionDraft();
   renderSessionBody();
 }
 
@@ -3589,6 +3797,8 @@ function endSession(save){
       appData.plans = plans;
       fbSavePlan(selectedDateStr, []);
     }
+    // The session is finished — the local draft has served its purpose
+    clearSessionDraft(selectedDateStr);
   }
   swStop();
   document.getElementById('s-session').classList.remove('active');
@@ -3939,7 +4149,7 @@ function startSessionFromPlan(){
       if(g) g.exerciseIds.forEach(id=>{ const e=exercises.find(x=>x.id===id); if(e) planExercises.push({...e,groupName:g.name}); });
     } else {
       const e=exercises.find(x=>x.id===item.id)||(item.id?null:exercises.find(x=>x.name===item.id));
-      if(e) planExercises.push({...e,groupName:'Individual'});
+      if(e) planExercises.push({...e,groupName:'Individual',defaultSets:item.sets||e.defaultSets});
     }
   });
 
@@ -3982,6 +4192,9 @@ function startSessionFromPlan(){
     });
     editingSessionId=null;
   }
+
+  // Restore any in-progress typing from before an accidental close/refresh
+  applySessionDraft(selectedDateStr);
 
   const names=[...new Set(sessionExercises.map(e=>e.groupName||'').filter(n=>n&&n!=='Individual'))];
   document.getElementById('sess-title').textContent=names.join(' + ')||'Session';
