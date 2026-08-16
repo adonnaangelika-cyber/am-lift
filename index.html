@@ -3235,18 +3235,17 @@ function updatePlanBuilderMusclePreview(){
 
     const addCounts = {};
     tempPlanSelections.forEach(item=>{
-      let exs = [];
       if(item.type==='group'){
         const g=groups.find(x=>x.id===item.id);
-        if(g) exs = g.exerciseIds.map(id=>exercises.find(x=>x.id===id)).filter(Boolean);
+        if(g) g.exerciseIds.forEach(id=>{
+          const e=exercises.find(x=>x.id===id);
+          if(e){ const sets=e.defaultSets||3; (e.muscles||[]).forEach(m=>{ addCounts[m]=(addCounts[m]||0)+sets; }); }
+        });
       } else {
         const e=exercises.find(x=>x.id===item.id);
-        if(e) exs = [e];
+        // Honor a per-exercise sets override from the stepper, not just the exercise's own default
+        if(e){ const sets=item.sets||e.defaultSets||3; (e.muscles||[]).forEach(m=>{ addCounts[m]=(addCounts[m]||0)+sets; }); }
       }
-      exs.forEach(e=>{
-        const sets = e.defaultSets||3;
-        (e.muscles||[]).forEach(m=>{ addCounts[m]=(addCounts[m]||0)+sets; });
-      });
     });
 
     const setsSorted = [...MUSCLE_GROUPS].sort((a,b)=>{
