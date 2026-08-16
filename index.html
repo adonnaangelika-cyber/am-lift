@@ -1003,7 +1003,7 @@ async function loadFromFirebase(){
   fbLoading=true;
   setSyncStatus('syncing');
   // Reset in-memory data for this profile
-  appData.sessions=null; appData.plans=null; appData.done={}; appData.inlineLog=loadInlineLogDrafts();
+  appData.sessions=null; appData.plans=null; appData.done={}; appData.inlineLog={};
   try {
     const needsShared = appData.exercises===null || appData.groups===null;
     const promises = [sessRef().get(), planRef().get()];
@@ -1683,7 +1683,7 @@ function selectProfile(p){
   document.getElementById('hdr-name').textContent = p==='adonna'?'Adonna':'Brittney';
   selectedProgressEx = null;
   // Reset profile-scoped data; shared data (exercises/groups) kept across profile switches
-  appData.sessions=null; appData.plans=null; appData.done={}; appData.inlineLog=loadInlineLogDrafts();
+  appData.sessions=null; appData.plans=null; appData.done={}; appData.inlineLog={};
   // Show loading state immediately, then render after Firebase returns
   goTab('today');
   loadFromFirebase().then(()=>{
@@ -2433,11 +2433,33 @@ function inlineKey(dateStr, itemIdx, exIdx){
   return `inlog_${profile}_${dateStr}_${itemIdx}_${exIdx}`;
 }
 
+// The in-memory key above is by POSITION (which slot in today's plan) — that's
+// how the on-screen panels are addressed, and it's fine as long as it never
+// outlives a single render. The localStorage draft key below is deliberately
+// different: it's by exercise IDENTITY (which exercise), so that editing,
+// reordering, or rebuilding the plan — something done often, including
+// mid-session — can never cause a saved draft to reattach to the wrong
+// exercise. A draft always finds its way back to the same exercise, however
+// the plan around it changes.
+function inlineDraftKey(dateStr, ex){
+  const id = ex?.id || ex?.name || 'unknown';
+  return `liftDraft_inlog_${profile}_${dateStr}_${id}`;
+}
+
 function getInlineLog(dateStr, itemIdx, exIdx, ex){
   const k = inlineKey(dateStr, itemIdx, exIdx);
   if(appData.inlineLog[k]) return appData.inlineLog[k];
-  const initial = makeInitialSessionData(ex, null);
-  const state = {...initial, timerElapsed:0, timerRunning:false, timerInterval:null};
+  // No in-memory state for this panel yet — check for a saved draft for this
+  // exact exercise (by identity) before falling back to a blank start.
+  let state = null;
+  try {
+    const raw = localStorage.getItem(inlineDraftKey(dateStr, ex));
+    if(raw) state = JSON.parse(raw);
+  } catch(e) {}
+  if(!state){
+    const initial = makeInitialSessionData(ex, null);
+    state = {...initial, timerElapsed:0, timerRunning:false, timerInterval:null};
+  }
   appData.inlineLog[k] = state;
   return state;
 }
@@ -2445,40 +2467,22 @@ function getInlineLog(dateStr, itemIdx, exIdx, ex){
 // ── Draft persistence — silently mirrors in-progress typing to localStorage
 // so an accidental close/refresh doesn't lose what was typed. Nothing is
 // pushed to Firestore until the exercise (or session) is actually completed.
-function saveInlineLog(dateStr, itemIdx, exIdx){
+function saveInlineLog(dateStr, itemIdx, exIdx, ex){
   const k = inlineKey(dateStr, itemIdx, exIdx);
   const state = appData.inlineLog[k];
+  if(!ex) return;
   try {
     if(state){
       const {timerInterval, ...persistable} = state; // never serialize a live interval id
-      localStorage.setItem('liftDraft_'+k, JSON.stringify(persistable));
+      localStorage.setItem(inlineDraftKey(dateStr, ex), JSON.stringify(persistable));
     } else {
-      localStorage.removeItem('liftDraft_'+k);
+      localStorage.removeItem(inlineDraftKey(dateStr, ex));
     }
   } catch(e) {}
 }
 
-function clearInlineLogDraft(k){
-  try { localStorage.removeItem('liftDraft_'+k); } catch(e) {}
-}
-
-// Reads every saved inline-log draft for the current profile back into memory.
-// Called on load so typing survives a refresh/close.
-function loadInlineLogDrafts(){
-  const map = {};
-  try {
-    const prefix = `liftDraft_inlog_${profile}_`;
-    for(let i=0;i<localStorage.length;i++){
-      const key = localStorage.key(i);
-      if(key && key.startsWith(prefix)){
-        try {
-          const val = JSON.parse(localStorage.getItem(key));
-          if(val) map[key.slice('liftDraft_'.length)] = val;
-        } catch(e) {}
-      }
-    }
-  } catch(e) {}
-  return map;
+function clearInlineLogDraft(dateStr, ex){
+  try { localStorage.removeItem(inlineDraftKey(dateStr, ex)); } catch(e) {}
 }
 
 function buildInlineExPanel(ex, itemIdx, exIdx, isDone, isB, bClass, dateStr){
@@ -2682,7 +2686,7 @@ function inlineUpdUniform(itemIdx, exIdx, dateStr, field, val){
   state.uniform[field] = val;
   // Apply to all sets
   state.sets.forEach(s => s[field] = val);
-  saveInlineLog(dateStr, itemIdx, exIdx);
+  saveInlineLog(dateStr, itemIdx, exIdx, ex);
 }
 
 function inlineAdjSets(itemIdx, exIdx, dateStr, pfx, delta){
@@ -2702,7 +2706,7 @@ function inlineAdjSets(itemIdx, exIdx, dateStr, pfx, delta){
     state.sets.push(s);
   }
   if(state.sets.length > next) state.sets = state.sets.slice(0, next);
-  saveInlineLog(dateStr, itemIdx, exIdx);
+  saveInlineLog(dateStr, itemIdx, exIdx, ex);
   const el = document.getElementById(pfx+'-sc');
   if(el) el.textContent = state.sets.length;
 }
@@ -2720,7 +2724,7 @@ function inlineToggleDiffer(itemIdx, exIdx, dateStr, pfx, checked){
       if(state.uniform.time && !s.time) s.time = state.uniform.time;
     });
   }
-  saveInlineLog(dateStr, itemIdx, exIdx);
+  saveInlineLog(dateStr, itemIdx, exIdx, ex);
   // Re-render the panel
   const isB = profile==='brittney';
   const bClass = isB?'b':'';
@@ -2746,7 +2750,7 @@ function inlineUpdSet(itemIdx, exIdx, dateStr, si, field, val){
   if(!ex) return;
   const state = getInlineLog(dateStr, itemIdx, exIdx, ex);
   if(state.sets[si]) state.sets[si][field] = val;
-  saveInlineLog(dateStr, itemIdx, exIdx);
+  saveInlineLog(dateStr, itemIdx, exIdx, ex);
 }
 
 function inlineToggleSetDone(itemIdx, exIdx, dateStr, si, btn){
@@ -2758,7 +2762,7 @@ function inlineToggleSetDone(itemIdx, exIdx, dateStr, si, btn){
     state.sets[si].done = !state.sets[si].done;
     btn.className = `pday-log-check ${state.sets[si].done?'done':''}${state.sets[si].done&&isB?' b':''}`;
   }
-  saveInlineLog(dateStr, itemIdx, exIdx);
+  saveInlineLog(dateStr, itemIdx, exIdx, ex);
 }
 
 function inlineAddSet(itemIdx, exIdx, dateStr, pfx){
@@ -2767,7 +2771,7 @@ function inlineAddSet(itemIdx, exIdx, dateStr, pfx){
   const state = getInlineLog(dateStr, itemIdx, exIdx, ex);
   const tt = getTrackType(ex);
   state.sets.push(emptySet(tt));
-  saveInlineLog(dateStr, itemIdx, exIdx);
+  saveInlineLog(dateStr, itemIdx, exIdx, ex);
   // Re-render just this panel
   const panel = document.getElementById(pfx);
   if(!panel) return;
@@ -2826,7 +2830,7 @@ function inlineTimerStop(pfx, itemIdx, exIdx, dateStr){
       if(row){ const inp=row.querySelector('input[placeholder="secs"]'); if(inp) inp.value=elapsed; }
     }
   }
-  saveInlineLog(dateStr, itemIdx, exIdx);
+  saveInlineLog(dateStr, itemIdx, exIdx, ex);
   const disp = document.getElementById(pfx+'-tdisp');
   const startBtn = document.getElementById(pfx+'-tstart');
   const stopBtn = document.getElementById(pfx+'-tstop');
@@ -2844,7 +2848,7 @@ function inlineTimerReset(pfx, itemIdx, exIdx, dateStr){
   const state = getInlineLog(dateStr, itemIdx, exIdx, ex);
   state.timerElapsed = 0;
   state.timerRunning = false;
-  saveInlineLog(dateStr, itemIdx, exIdx);
+  saveInlineLog(dateStr, itemIdx, exIdx, ex);
   const disp = document.getElementById(pfx+'-tdisp');
   const startBtn = document.getElementById(pfx+'-tstart');
   const stopBtn = document.getElementById(pfx+'-tstop');
@@ -2992,7 +2996,10 @@ async function completePlanItem(itemIdx, dateStr){
   }
   setDone(dateStr,newDoneState2);
 
-  // ── Reindex inline log keys so shifted exercises keep their logged data ──
+  // ── Reindex in-memory inline-log panels so shifted exercises keep showing
+  // their in-progress data (the on-screen panels are addressed by position).
+  // The saved localStorage drafts don't need any of this — they're keyed by
+  // exercise identity, not position, so they're unaffected by the shift.
   const logPrefix=`inlog_${profile}_${dateStr}_`;
   const logKeys=Object.keys(appData.inlineLog).filter(k=>k.startsWith(logPrefix));
   logKeys.sort((a,b)=>b.localeCompare(a));
@@ -3003,15 +3010,15 @@ async function completePlanItem(itemIdx, dateStr){
     const suffix=rest.slice(uscore);
     if(idx===itemIdx){
       delete appData.inlineLog[k];
-      clearInlineLogDraft(k);
     } else if(idx>itemIdx){
       const val=appData.inlineLog[k];
       delete appData.inlineLog[k];
-      clearInlineLogDraft(k);
       const newKey=`${logPrefix}${idx-1}${suffix}`;
-      if(val){ appData.inlineLog[newKey]=val; saveInlineLog(dateStr, idx-1, parseInt(suffix.slice(1))); }
+      if(val) appData.inlineLog[newKey]=val;
     }
   });
+  // This exercise is now committed to Firestore — its draft has served its purpose.
+  clearInlineLogDraft(dateStr, ex);
 
   // ── Remove completed item from plan ───────────────────────────────────
   flatPlan.splice(itemIdx,1);
@@ -3382,16 +3389,12 @@ function savePlan(){
   plans[selectedDateStr]=flatItems;
   appData.plans=plans;
   fbSavePlan(selectedDateStr,flatItems);
-  // Editing the plan can shift which exercise sits at which position, and the
-  // Today tab's quick-log drafts are keyed by position — so any not-yet-completed
-  // draft for this date is no longer guaranteed to match the right exercise.
-  // Clear it rather than risk resurrecting stale numbers under the wrong exercise.
-  // (Anything already marked done is safely stored in Firestore, not here.)
-  const stalePrefix=`inlog_${profile}_${selectedDateStr}_`;
-  Object.keys(appData.inlineLog).filter(k=>k.startsWith(stalePrefix)).forEach(k=>{
-    delete appData.inlineLog[k];
-    clearInlineLogDraft(k);
-  });
+  // In-memory inline-log panels are addressed by position, and editing the
+  // plan can shift positions — clear the (position-keyed) in-memory cache so
+  // panels re-resolve fresh next render. This does NOT touch localStorage
+  // drafts, which are keyed by exercise identity and stay correct regardless.
+  const posPrefix=`inlog_${profile}_${selectedDateStr}_`;
+  Object.keys(appData.inlineLog).filter(k=>k.startsWith(posPrefix)).forEach(k=>{ delete appData.inlineLog[k]; });
   // Go back to app and close plan builder screen
   document.getElementById('s-plan-builder').classList.remove('active');
   closeModal('m-planbuild'); // safety in case modal was open
